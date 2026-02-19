@@ -1,0 +1,12 @@
+﻿
+> studio-pro@1.0.0 build
+> tsc -b && vite build
+
+src/App.tsx(99,13): error TS2345: Argument of type '(error: Error) => void' is not assignable to parameter of type '(error: ErrorEvent) => void'.
+  Types of parameters 'error' and 'error' are incompatible.
+    Property 'name' is missing in type 'ErrorEvent' but required in type 'Error'.
+src/apps/app3d/main.tsx(3,8): error TS2307: Cannot find module './index.css' or its corresponding type declarations.
+src/apps/app4d/main.tsx(3,8): error TS2307: Cannot find module './index.css' or its corresponding type declarations.
+src/apps/appdfx/main.tsx(3,8): error TS2307: Cannot find module './index.css' or its corresponding type declarations.
+src/apps/appmulti/main.tsx(3,8): error TS2307: Cannot find module './index.css' or its corresponding type declarations.
+src/main.tsx(3,8): error TS2307: Cannot find module './index.css' or its corresponding type declarations.
