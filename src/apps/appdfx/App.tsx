@@ -56,6 +56,10 @@ interface AppState {
   expertMode: boolean;
   // Thinning
   thinningIntensity: number; // 0-20 iterations
+  // DXF & Vector Quality
+  dxfUnits: 'mm' | 'inch' | 'px';
+  vectorSmoothing: number;
+  despeckleThreshold: number;
 }
 
 const App: React.FC = () => {
@@ -97,6 +101,9 @@ const App: React.FC = () => {
     qtres: 1,
     expertMode: false,
     thinningIntensity: 0,
+    dxfUnits: 'mm',
+    vectorSmoothing: 0,
+    despeckleThreshold: 0,
   });
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -110,12 +117,22 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
-        img.onload = () => {
-          setState(prev => ({
-            ...prev,
-            originalImage: img,
-            isProcessing: false
-          }));
+        img.onload = async () => {
+          try {
+            await img.decode();
+            setState(prev => ({
+              ...prev,
+              originalImage: img,
+              isProcessing: false
+            }));
+          } catch (err) {
+            console.error("Image decode failed", err);
+            setState(prev => ({
+              ...prev,
+              originalImage: img,
+              isProcessing: false
+            }));
+          }
         };
         img.onerror = () => {
           console.error("Failed to load image");
@@ -130,372 +147,6 @@ const App: React.FC = () => {
       reader.readAsDataURL(file);
     }
   };
-
-  // Apply filters to canvas
-  useEffect(() => {
-    if (state.originalImage && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Handle Resize
-        let w = state.originalImage.width;
-        let h = state.originalImage.height;
-        if (state.resizeWidth !== 'Original') {
-          const targetWidth = parseInt(state.resizeWidth);
-          const ratio = targetWidth / w;
-          w = targetWidth;
-          h = h * ratio;
-        }
-        canvas.width = w;
-        canvas.height = h;
-
-        // Clear and draw
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(state.originalImage, 0, 0, canvas.width, canvas.height);
-
-        // Advanced Processing - Manual pixel manipulation
-        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-
-        // Pre-calculating factors for speed
-        const c = state.contrast / 100;
-        const contrastFactor = (259 * (c * 255 + 255)) / (255 * (259 - c * 255));
-        const gammaCorrection = 1 / state.gamma;
-
-        for (let i = 0; i < data.length; i += 4) {
-          let r = data[i];
-          let g = data[i + 1];
-          let b_pix = data[i + 2];
-
-          // 1. Brightness
-          if (state.brightness !== 0) {
-            r += state.brightness * 2.55;
-            g += state.brightness * 2.55;
-            b_pix += state.brightness * 2.55;
-          }
-
-          // 2. Contrast
-          if (state.contrast !== 0) {
-            r = contrastFactor * (r - 128) + 128;
-            g = contrastFactor * (g - 128) + 128;
-            b_pix = contrastFactor * (b_pix - 128) + 128;
-          }
-
-          // 3. Gamma
-          if (state.gamma !== 1.0) {
-            r = 255 * Math.pow(Math.max(0, r) / 255, gammaCorrection);
-            g = 255 * Math.pow(Math.max(0, g) / 255, gammaCorrection);
-            b_pix = 255 * Math.pow(Math.max(0, b_pix) / 255, gammaCorrection);
-          }
-
-          // 4. Invert
-          if (state.invertColors) {
-            r = 255 - r;
-            g = 255 - g;
-            b_pix = 255 - b_pix;
-          }
-
-          let gray = 0.299 * r + 0.587 * g + 0.114 * b_pix;
-          data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, gray));
-          data[i + 3] = 255;
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-
-        // ADVANCED PREPROCESSING for Ultimate Quality
-        imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const advData = imageData.data;
-        const width_adv = canvas.width;
-        const height_adv = canvas.height;
-
-        // 1. REAL DENOISE (Modified Median + Gaussian hybrid)
-        if (state.denoise > 0) {
-          const temp = new Uint8ClampedArray(advData);
-          const radius = Math.max(1, Math.floor(state.denoise / 30));
-          for (let y = radius; y < height_adv - radius; y++) {
-            for (let x = radius; x < width_adv - radius; x++) {
-              const idx = (y * width_adv + x) * 4;
-              let sum = 0;
-              let count = 0;
-              const neighbors = [];
-
-              for (let dy = -radius; dy <= radius; dy++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                  const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
-                  neighbors.push(advData[nidx]);
-                  sum += advData[nidx];
-                  count++;
-                }
-              }
-              // Hybrid: 70% Median (noise removal) + 30% Average (smoothing)
-              neighbors.sort((a, b) => a - b);
-              const median = neighbors[Math.floor(neighbors.length / 2)];
-              const avg = sum / count;
-              const factor = state.denoise / 100;
-              temp[idx] = temp[idx + 1] = temp[idx + 2] = median * factor + avg * (1 - factor);
-            }
-          }
-          advData.set(temp);
-        }
-
-        // 2. SURFACE SMOOTHING (High-performance Bilateral Filter approximation)
-        if (state.surfaceSmoothing > 0) {
-          const temp = new Uint8ClampedArray(advData);
-          const sigma = state.surfaceSmoothing / 10;
-          const radius = Math.max(1, Math.ceil(sigma));
-
-          for (let y = radius; y < height_adv - radius; y++) {
-            for (let x = radius; x < width_adv - radius; x++) {
-              const idx = (y * width_adv + x) * 4;
-              const centerVal = advData[idx];
-              let sumWeight = 0;
-              let sumVal = 0;
-
-              for (let dy = -radius; dy <= radius; dy++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                  const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
-                  const val = advData[nidx];
-
-                  // Spatial weight (Gaussian)
-                  const spatialDist = (dx * dx + dy * dy);
-                  const sWeight = Math.exp(-spatialDist / (2 * sigma * sigma));
-
-                  // Intensity weight (Edge preservation)
-                  const colorDist = (centerVal - val) * (centerVal - val);
-                  const cWeight = Math.exp(-colorDist / (2 * 50 * 50)); // Fixed 50 range for consistency
-
-                  const weight = sWeight * cWeight;
-                  sumWeight += weight;
-                  sumVal += val * weight;
-                }
-              }
-              temp[idx] = temp[idx + 1] = temp[idx + 2] = sumVal / sumWeight;
-            }
-          }
-          advData.set(temp);
-        }
-
-        // 3. Bilateral Filter tool (Already in UI, mapped to state.bilateralFilter)
-        if (state.bilateralFilter > 0) {
-          const filtered = new Uint8ClampedArray(advData);
-          const sigmaSpace = state.bilateralFilter;
-          const sigmaColor = state.bilateralFilter * 25;
-          const radius = Math.ceil(sigmaSpace * 2);
-
-          for (let y = 0; y < height_adv; y++) {
-            for (let x = 0; x < width_adv; x++) {
-              const idx = (y * width_adv + x) * 4;
-              const centerColor = advData[idx];
-              let sumWeight = 0;
-              let sumColor = 0;
-
-              for (let dy = -radius; dy <= radius; dy++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                  const ny = y + dy;
-                  const nx = x + dx;
-                  if (ny >= 0 && ny < height_adv && nx >= 0 && nx < width_adv) {
-                    const nidx = (ny * width_adv + nx) * 4;
-                    const nColor = advData[nidx];
-                    const spatialDist = dx * dx + dy * dy;
-                    const colorDist = (centerColor - nColor) * (centerColor - nColor);
-                    const weight = Math.exp(-spatialDist / (2 * sigmaSpace * sigmaSpace) - colorDist / (2 * sigmaColor * sigmaColor));
-                    sumWeight += weight;
-                    sumColor += weight * nColor;
-                  }
-                }
-              }
-              filtered[idx] = filtered[idx + 1] = filtered[idx + 2] = sumColor / sumWeight;
-            }
-          }
-          advData.set(filtered);
-        }
-
-        // 4. Median Filter tool
-        if (state.medianFilter) {
-          const filtered = new Uint8ClampedArray(advData);
-          for (let y = 1; y < height_adv - 1; y++) {
-            for (let x = 1; x < width_adv - 1; x++) {
-              const idx = (y * width_adv + x) * 4;
-              const neighbors = [];
-              for (let dy = -1; dy <= 1; dy++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                  neighbors.push(advData[((y + dy) * width_adv + (x + dx)) * 4]);
-                }
-              }
-              neighbors.sort((a, b) => a - b);
-              filtered[idx] = filtered[idx + 1] = filtered[idx + 2] = neighbors[4];
-            }
-          }
-          advData.set(filtered);
-        }
-
-        // 5. Unsharp Masking (edge enhancement)
-        if (state.unsharpMask > 0) {
-          const blurred = new Uint8ClampedArray(advData);
-          const r_blur = 2;
-
-          for (let y = r_blur; y < height_adv - r_blur; y++) {
-            for (let x = r_blur; x < width_adv - r_blur; x++) {
-              const idx = (y * width_adv + x) * 4;
-              let sum = 0;
-              let weightSum = 0;
-              for (let dy = -r_blur; dy <= r_blur; dy++) {
-                for (let dx = -r_blur; dx <= r_blur; dx++) {
-                  const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
-                  const weight = Math.exp(-(dx * dx + dy * dy) / (2 * r_blur * r_blur));
-                  sum += advData[nidx] * weight;
-                  weightSum += weight;
-                }
-              }
-              blurred[idx] = sum / weightSum;
-            }
-          }
-
-          const amount = state.unsharpMask / 50;
-          for (let i = 0; i < advData.length; i += 4) {
-            const original = advData[i];
-            const blur = blurred[i];
-            const sharp = original + amount * (original - blur);
-            advData[i] = advData[i + 1] = advData[i + 2] = Math.min(255, Math.max(0, sharp));
-          }
-        }
-
-        // 6. Morphological Operations
-        if (state.morphology > 0) {
-          const morphed = new Uint8ClampedArray(advData);
-          const applyMorph = (operation: 'erode' | 'dilate') => {
-            const current = new Uint8ClampedArray(advData);
-            for (let y = 1; y < height_adv - 1; y++) {
-              for (let x = 1; x < width_adv - 1; x++) {
-                const idx = (y * width_adv + x) * 4;
-                let value = operation === 'erode' ? 255 : 0;
-                for (let dy = -1; dy <= 1; dy++) {
-                  for (let dx = -1; dx <= 1; dx++) {
-                    const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
-                    if (operation === 'erode') value = Math.min(value, current[nidx]);
-                    else value = Math.max(value, current[nidx]);
-                  }
-                }
-                morphed[idx] = morphed[idx + 1] = morphed[idx + 2] = value;
-              }
-            }
-            advData.set(morphed);
-          };
-
-          switch (state.morphology) {
-            case 1: applyMorph('erode'); break;
-            case 2: applyMorph('dilate'); break;
-            case 3: applyMorph('erode'); applyMorph('dilate'); break; // Opening
-            case 4: applyMorph('dilate'); applyMorph('erode'); break; // Closing
-          }
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-
-        // Apply Dithering if needed
-        if (state.ditheringMode !== 'Grayscale') {
-          imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          applyDithering(imageData.data, canvas.width, canvas.height, state.ditheringMode);
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-
-        // LASER MODE: Edge Enhancement for continuous, clean paths
-        // LASER MODE: Single-Path Skeletonization (Fix Double Lines)
-        if (state.laserMode || state.thinningIntensity > 0) {
-          imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          const w = canvas.width;
-          const h = canvas.height;
-
-          // 1. Thresholding to Binary (Black & White) - Essential for thinning
-          const binary = new Uint8Array(w * h);
-          for (let i = 0; i < data.length; i += 4) {
-            const gray = data[i];
-            binary[i / 4] = gray < 128 ? 1 : 0; // 1 = Foreground (Black)
-          }
-
-          // 2. Zhang-Suen Thinning Algorithm
-          const iterations = state.laserMode ? 20 : state.thinningIntensity;
-          if (iterations > 0) {
-            const thinning = (pass: number) => {
-              const toRemove = [];
-              for (let y = 1; y < h - 1; y++) {
-                for (let x = 1; x < w - 1; x++) {
-                  const p1 = binary[y * w + x];
-                  if (p1 === 0) continue;
-
-                  // Neighborhood: p2 p3 p4
-                  //               p9 p1 p5
-                  //               p8 p7 p6
-                  const p2 = binary[(y - 1) * w + x];
-                  const p3 = binary[(y - 1) * w + (x + 1)];
-                  const p4 = binary[y * w + (x + 1)];
-                  const p5 = binary[(y + 1) * w + (x + 1)];
-                  const p6 = binary[(y + 1) * w + x];
-                  const p7 = binary[(y + 1) * w + (x - 1)];
-                  const p8 = binary[y * w + (x - 1)];
-                  const p9 = binary[(y - 1) * w + (x - 1)];
-
-                  const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
-                  const a = (p2 === 0 && p3 === 1 ? 1 : 0) + (p3 === 0 && p4 === 1 ? 1 : 0) +
-                    (p4 === 0 && p5 === 1 ? 1 : 0) + (p5 === 0 && p6 === 1 ? 1 : 0) +
-                    (p6 === 0 && p7 === 1 ? 1 : 0) + (p7 === 0 && p8 === 1 ? 1 : 0) +
-                    (p8 === 0 && p9 === 1 ? 1 : 0) + (p9 === 0 && p2 === 1 ? 1 : 0);
-
-                  if (b >= 2 && b <= 6 && a === 1) {
-                    if (pass === 0) {
-                      if (p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0) toRemove.push(y * w + x);
-                    } else {
-                      if (p2 * p4 * p8 === 0 && p2 * p6 * p8 === 0) toRemove.push(y * w + x);
-                    }
-                  }
-                }
-              }
-              for (const idx of toRemove) binary[idx] = 0;
-              return toRemove.length > 0;
-            };
-
-            for (let i = 0; i < iterations; i++) {
-              const changed1 = thinning(0);
-              const changed2 = thinning(1);
-              if (!changed1 && !changed2) break;
-            }
-          }
-
-          // 3. Write back to ImageData
-          for (let i = 0; i < binary.length; i++) {
-            const v = binary[i] === 1 ? 0 : 255;
-            data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v;
-            data[i * 4 + 3] = 255;
-          }
-
-          ctx.putImageData(imageData, 0, 0);
-        }
-
-        // Update Vector Preview if enabled
-        if (state.showVector) {
-          const svg = previewSVG(
-            canvas,
-            state.smoothness,
-            state.laserMode ? 0 : state.pathOptimization, // Force pathomit=0 for laser
-            state.strokeWidth,
-            state.blurRadius,
-            state.rightAngleEnhance,
-            state.minColorRange,
-            state.scale,
-            state.roundCoords,
-            state.layering,
-            state.colorQuantCycles,
-            state.minColorRatio,
-            state.ltres,
-            state.qtres
-          );
-          setState(prev => ({ ...prev, vectorSVG: svg }));
-        }
-      }
-    }
-  }, [state.originalImage, state.brightness, state.contrast, state.gamma, state.invertColors, state.resizeWidth, state.ditheringMode, state.showVector, state.smoothness, state.pathOptimization, state.strokeWidth, state.blurRadius, state.rightAngleEnhance, state.minColorRange, state.scale, state.roundCoords, state.layering, state.colorQuantCycles, state.minColorRatio, state.laserMode, state.morphology, state.bilateralFilter, state.unsharpMask, state.medianFilter, state.ltres, state.qtres, state.thinningIntensity]);
 
   // Dithering Algorithms
   const applyDithering = (data: Uint8ClampedArray, width: number, height: number, mode: DitheringMode) => {
@@ -551,6 +202,377 @@ const App: React.FC = () => {
     }
   };
 
+  // Apply filters to canvas
+  useEffect(() => {
+    if (!state.originalImage || !canvasRef.current) return;
+
+    const processImage = async () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+
+      // Handle Resize
+      let w = state.originalImage!.width;
+      let h = state.originalImage!.height;
+      if (w === 0 || h === 0) return;
+
+      if (state.resizeWidth !== 'Original') {
+        const targetWidth = parseInt(state.resizeWidth);
+        const ratio = targetWidth / w;
+        w = targetWidth;
+        h = h * ratio;
+      }
+      canvas.width = w;
+      canvas.height = h;
+
+      // Use async drawing to ensure image is ready
+      try {
+        const bitmap = await createImageBitmap(state.originalImage!);
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+      } catch (err) {
+        console.error("createImageBitmap failed, falling back to drawImage", err);
+        ctx.drawImage(state.originalImage!, 0, 0, canvas.width, canvas.height);
+      }
+
+      // Advanced Processing - Manual pixel manipulation
+      let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      // Pre-calculating factors for speed
+      const c = state.contrast / 100;
+      const contrastFactor = (259 * (c * 255 + 255)) / (255 * (259 - c * 255));
+      const gammaCorrection = 1 / state.gamma;
+
+      for (let i = 0; i < data.length; i += 4) {
+        let r = data[i];
+        let g = data[i + 1];
+        let b_pix = data[i + 2];
+
+        // 1. Brightness
+        if (state.brightness !== 0) {
+          r += state.brightness * 2.55;
+          g += state.brightness * 2.55;
+          b_pix += state.brightness * 2.55;
+        }
+
+        // 2. Contrast
+        if (state.contrast !== 0) {
+          r = contrastFactor * (r - 128) + 128;
+          g = contrastFactor * (g - 128) + 128;
+          b_pix = contrastFactor * (b_pix - 128) + 128;
+        }
+
+        // 3. Gamma
+        if (state.gamma !== 1.0) {
+          r = 255 * Math.pow(Math.max(0, r) / 255, gammaCorrection);
+          g = 255 * Math.pow(Math.max(0, g) / 255, gammaCorrection);
+          b_pix = 255 * Math.pow(Math.max(0, b_pix) / 255, gammaCorrection);
+        }
+
+        // 4. Invert
+        if (state.invertColors) {
+          r = 255 - r;
+          g = 255 - g;
+          b_pix = 255 - b_pix;
+        }
+
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b_pix;
+        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, gray));
+        data[i + 3] = 255;
+      }
+
+      // ADVANCED PREPROCESSING for Ultimate Quality
+      const advData = data;
+      const width_adv = canvas.width;
+      const height_adv = canvas.height;
+
+      // 1. REAL DENOISE (Modified Median + Gaussian hybrid)
+      if (state.denoise > 0) {
+        const temp = new Uint8ClampedArray(advData);
+        const radius = Math.max(1, Math.floor(state.denoise / 30));
+        for (let y = radius; y < height_adv - radius; y++) {
+          for (let x = radius; x < width_adv - radius; x++) {
+            const idx = (y * width_adv + x) * 4;
+            let sum = 0;
+            let count = 0;
+            const neighbors = [];
+
+            for (let dy = -radius; dy <= radius; dy++) {
+              for (let dx = -radius; dx <= radius; dx++) {
+                const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
+                neighbors.push(advData[nidx]);
+                sum += advData[nidx];
+                count++;
+              }
+            }
+            // Hybrid: 70% Median (noise removal) + 30% Average (smoothing)
+            neighbors.sort((a, b) => a - b);
+            const median = neighbors[Math.floor(neighbors.length / 2)];
+            const avg = sum / count;
+            const factor = state.denoise / 100;
+            temp[idx] = temp[idx + 1] = temp[idx + 2] = median * factor + avg * (1 - factor);
+          }
+        }
+        advData.set(temp);
+      }
+
+      // 2. SURFACE SMOOTHING (High-performance Bilateral Filter approximation)
+      if (state.surfaceSmoothing > 0) {
+        const temp = new Uint8ClampedArray(advData);
+        const sigma = state.surfaceSmoothing / 10;
+        const radius = Math.max(1, Math.ceil(sigma));
+
+        for (let y = radius; y < height_adv - radius; y++) {
+          for (let x = radius; x < width_adv - radius; x++) {
+            const idx = (y * width_adv + x) * 4;
+            const centerVal = advData[idx];
+            let sumWeight = 0;
+            let sumVal = 0;
+
+            for (let dy = -radius; dy <= radius; dy++) {
+              for (let dx = -radius; dx <= radius; dx++) {
+                const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
+                const val = advData[nidx];
+
+                // Spatial weight (Gaussian)
+                const spatialDist = (dx * dx + dy * dy);
+                const sWeight = Math.exp(-spatialDist / (2 * sigma * sigma));
+
+                // Intensity weight (Edge preservation)
+                const colorDist = (centerVal - val) * (centerVal - val);
+                const cWeight = Math.exp(-colorDist / (2 * 50 * 50)); // Fixed 50 range for consistency
+
+                const weight = sWeight * cWeight;
+                sumWeight += weight;
+                sumVal += val * weight;
+              }
+            }
+            temp[idx] = temp[idx + 1] = temp[idx + 2] = sumVal / sumWeight;
+          }
+        }
+        advData.set(temp);
+      }
+
+      // 3. Bilateral Filter tool (Already in UI, mapped to state.bilateralFilter)
+      if (state.bilateralFilter > 0) {
+        const filtered = new Uint8ClampedArray(advData);
+        const sigmaSpace = state.bilateralFilter;
+        const sigmaColor = state.bilateralFilter * 25;
+        const radius = Math.ceil(sigmaSpace * 2);
+
+        for (let y = 0; y < height_adv; y++) {
+          for (let x = 0; x < width_adv; x++) {
+            const idx = (y * width_adv + x) * 4;
+            const centerColor = advData[idx];
+            let sumWeight = 0;
+            let sumColor = 0;
+
+            for (let dy = -radius; dy <= radius; dy++) {
+              for (let dx = -radius; dx <= radius; dx++) {
+                const ny = y + dy;
+                const nx = x + dx;
+                if (ny >= 0 && ny < height_adv && nx >= 0 && nx < width_adv) {
+                  const nidx = (ny * width_adv + nx) * 4;
+                  const nColor = advData[nidx];
+                  const spatialDist = dx * dx + dy * dy;
+                  const colorDist = (centerColor - nColor) * (centerColor - nColor);
+                  const weight = Math.exp(-spatialDist / (2 * sigmaSpace * sigmaSpace) - colorDist / (2 * sigmaColor * sigmaColor));
+                  sumWeight += weight;
+                  sumColor += weight * nColor;
+                }
+              }
+            }
+            filtered[idx] = filtered[idx + 1] = filtered[idx + 2] = sumColor / sumWeight;
+          }
+        }
+        advData.set(filtered);
+      }
+
+      // 4. Median Filter tool
+      if (state.medianFilter) {
+        const filtered = new Uint8ClampedArray(advData);
+        for (let y = 1; y < height_adv - 1; y++) {
+          for (let x = 1; x < width_adv - 1; x++) {
+            const idx = (y * width_adv + x) * 4;
+            const neighbors = [];
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                neighbors.push(advData[((y + dy) * width_adv + (x + dx)) * 4]);
+              }
+            }
+            neighbors.sort((a, b) => a - b);
+            filtered[idx] = filtered[idx + 1] = filtered[idx + 2] = neighbors[4];
+          }
+        }
+        advData.set(filtered);
+      }
+
+      // 5. Unsharp Masking (edge enhancement)
+      if (state.unsharpMask > 0) {
+        const blurred = new Uint8ClampedArray(advData);
+        const r_blur = 2;
+
+        for (let y = r_blur; y < height_adv - r_blur; y++) {
+          for (let x = r_blur; x < width_adv - r_blur; x++) {
+            const idx = (y * width_adv + x) * 4;
+            let sum = 0;
+            let weightSum = 0;
+            for (let dy = -r_blur; dy <= r_blur; dy++) {
+              for (let dx = -r_blur; dx <= r_blur; dx++) {
+                const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
+                const weight = Math.exp(-(dx * dx + dy * dy) / (2 * r_blur * r_blur));
+                sum += advData[nidx] * weight;
+                weightSum += weight;
+              }
+            }
+            blurred[idx] = sum / weightSum;
+          }
+        }
+
+        const amount = state.unsharpMask / 50;
+        for (let i = 0; i < advData.length; i += 4) {
+          const original = advData[i];
+          const blur = blurred[i];
+          const sharp = original + amount * (original - blur);
+          advData[i] = advData[i + 1] = advData[i + 2] = Math.min(255, Math.max(0, sharp));
+        }
+      }
+
+      // 6. Morphological Operations
+      if (state.morphology > 0) {
+        const morphed = new Uint8ClampedArray(advData);
+        const applyMorph = (operation: 'erode' | 'dilate') => {
+          const current = new Uint8ClampedArray(advData);
+          for (let y = 1; y < height_adv - 1; y++) {
+            for (let x = 1; x < width_adv - 1; x++) {
+              const idx = (y * width_adv + x) * 4;
+              let value = operation === 'erode' ? 255 : 0;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  const nidx = ((y + dy) * width_adv + (x + dx)) * 4;
+                  if (operation === 'erode') value = Math.min(value, current[nidx]);
+                  else value = Math.max(value, current[nidx]);
+                }
+              }
+              morphed[idx] = morphed[idx + 1] = morphed[idx + 2] = value;
+            }
+          }
+          advData.set(morphed);
+        };
+
+        switch (state.morphology) {
+          case 1: applyMorph('erode'); break;
+          case 2: applyMorph('dilate'); break;
+          case 3: applyMorph('erode'); applyMorph('dilate'); break; // Opening
+          case 4: applyMorph('dilate'); applyMorph('erode'); break; // Closing
+        }
+      }
+
+      // Apply Dithering if needed
+      if (state.ditheringMode !== 'Grayscale' && state.ditheringMode !== 'Edge Detection') {
+        applyDithering(advData, canvas.width, canvas.height, state.ditheringMode);
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+
+      // LASER MODE: Single-Path Skeletonization
+      if (state.laserMode || state.thinningIntensity > 0) {
+        imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const dataLaser = imageData.data;
+        const wL = canvas.width;
+        const hL = canvas.height;
+
+        const binary = new Uint8Array(wL * hL);
+        for (let i = 0; i < dataLaser.length; i += 4) {
+          binary[i / 4] = dataLaser[i] < 128 ? 1 : 0;
+        }
+
+        const iterations = state.laserMode ? 20 : state.thinningIntensity;
+        if (iterations > 0) {
+          const thinning = (pass: number) => {
+            const toRemove = [];
+            for (let y = 1; y < hL - 1; y++) {
+              for (let x = 1; x < wL - 1; x++) {
+                const p1 = binary[y * wL + x];
+                if (p1 === 0) continue;
+
+                const p2 = binary[(y - 1) * wL + x];
+                const p3 = binary[(y - 1) * wL + (x + 1)];
+                const p4 = binary[y * wL + (x + 1)];
+                const p5 = binary[(y + 1) * wL + (x + 1)];
+                const p6 = binary[(y + 1) * wL + x];
+                const p7 = binary[(y + 1) * wL + (x - 1)];
+                const p8 = binary[y * wL + (x - 1)];
+                const p9 = binary[(y - 1) * wL + (x - 1)];
+
+                const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+                const a = (p2 === 0 && p3 === 1 ? 1 : 0) + (p3 === 0 && p4 === 1 ? 1 : 0) +
+                  (p4 === 0 && p5 === 1 ? 1 : 0) + (p5 === 0 && p6 === 1 ? 1 : 0) +
+                  (p6 === 0 && p7 === 1 ? 1 : 0) + (p7 === 0 && p8 === 1 ? 1 : 0) +
+                  (p8 === 0 && p9 === 1 ? 1 : 0) + (p9 === 0 && p2 === 1 ? 1 : 0);
+
+                if (b >= 2 && b <= 6 && a === 1) {
+                  if (pass === 0) {
+                    if (p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0) toRemove.push(y * wL + x);
+                  } else {
+                    if (p2 * p4 * p8 === 0 && p2 * p6 * p8 === 0) toRemove.push(y * wL + x);
+                  }
+                }
+              }
+            }
+            for (const idx of toRemove) binary[idx] = 0;
+            return toRemove.length > 0;
+          };
+
+          for (let i = 0; i < iterations; i++) {
+            const changed1 = thinning(0);
+            const changed2 = thinning(1);
+            if (!changed1 && !changed2) break;
+          }
+        }
+
+        for (let i = 0; i < binary.length; i++) {
+          const v = binary[i] === 1 ? 0 : 255;
+          dataLaser[i * 4] = dataLaser[i * 4 + 1] = dataLaser[i * 4 + 2] = v;
+          dataLaser[i * 4 + 3] = 255;
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // Update Vector Preview if enabled
+      if (state.showVector) {
+        const svg = previewSVG(
+          canvas,
+          state.smoothness,
+          state.laserMode ? 0 : state.pathOptimization,
+          state.strokeWidth,
+          state.blurRadius,
+          state.rightAngleEnhance,
+          state.minColorRange,
+          state.scale,
+          state.roundCoords,
+          state.layering,
+          state.colorQuantCycles,
+          state.minColorRatio,
+          state.ltres,
+          state.qtres,
+          state.despeckleThreshold,
+          state.vectorSmoothing
+        );
+        setState(prev => ({ ...prev, vectorSVG: svg }));
+      }
+    };
+
+    const timeoutId = setTimeout(processImage, 250);
+    return () => clearTimeout(timeoutId);
+  }, [state.originalImage, state.brightness, state.contrast, state.gamma, state.invertColors, state.resizeWidth, state.ditheringMode, state.showVector, state.smoothness, state.pathOptimization, state.strokeWidth, state.blurRadius, state.rightAngleEnhance, state.minColorRange, state.scale, state.roundCoords, state.layering, state.colorQuantCycles, state.minColorRatio, state.laserMode, state.morphology, state.bilateralFilter, state.unsharpMask, state.medianFilter, state.ltres, state.qtres, state.thinningIntensity, state.denoise, state.surfaceSmoothing, state.despeckleThreshold, state.vectorSmoothing]);
+
+
   const handleExport = (format: ExportFormat) => {
     if (!canvasRef.current) return;
 
@@ -564,7 +586,7 @@ const App: React.FC = () => {
             exportToSVG(
               canvasRef.current!,
               state.smoothness,
-              state.laserMode ? 0 : state.pathOptimization, // Force pathomit=0 for laser
+              state.laserMode ? 0 : state.pathOptimization,
               state.strokeWidth,
               state.blurRadius,
               state.rightAngleEnhance,
@@ -573,14 +595,18 @@ const App: React.FC = () => {
               state.roundCoords,
               state.layering,
               state.colorQuantCycles,
-              state.minColorRatio
+              state.minColorRatio,
+              state.ltres,
+              state.qtres,
+              state.despeckleThreshold,
+              state.vectorSmoothing
             );
             break;
           case 'DXF':
             exportToDXF(
               canvasRef.current!,
               state.smoothness,
-              state.laserMode ? 0 : state.pathOptimization, // Force pathomit=0 for laser
+              state.laserMode ? 0 : state.pathOptimization,
               state.strokeWidth,
               state.blurRadius,
               state.rightAngleEnhance,
@@ -589,7 +615,12 @@ const App: React.FC = () => {
               state.roundCoords,
               state.layering,
               state.colorQuantCycles,
-              state.minColorRatio
+              state.minColorRatio,
+              state.ltres,
+              state.qtres,
+              state.dxfUnits,
+              state.despeckleThreshold,
+              state.vectorSmoothing
             );
             break;
         }
@@ -1069,6 +1100,34 @@ const App: React.FC = () => {
                 <div className="control-item">
                   <label style={{ fontSize: '0.8rem' }}>Curve Precision (qtres): {state.qtres.toFixed(1)}</label>
                   <input type="range" min="0.1" max="5.0" step="0.1" value={state.qtres} onChange={(e) => setState(prev => ({ ...prev, qtres: Number(e.target.value) }))} />
+                </div>
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0', paddingTop: '0.5rem' }}>
+                  <span style={{ fontSize: '0.75rem', color: '#ff6b00', display: 'block', marginBottom: '0.5rem' }}>Vector Quality & Refinement</span>
+
+                  <div className="control-item">
+                    <label style={{ fontSize: '0.8rem' }}>Despeckle (Noise): {state.despeckleThreshold}px</label>
+                    <input type="range" min="0" max="100" step="1" value={state.despeckleThreshold} onChange={(e) => setState(prev => ({ ...prev, despeckleThreshold: Number(e.target.value) }))} />
+                  </div>
+
+                  <div className="control-item">
+                    <label style={{ fontSize: '0.8rem' }}>Path Smoothing: {state.vectorSmoothing} iter</label>
+                    <input type="range" min="0" max="10" step="1" value={state.vectorSmoothing} onChange={(e) => setState(prev => ({ ...prev, vectorSmoothing: Number(e.target.value) }))} />
+                  </div>
+
+                  <div className="control-item">
+                    <label style={{ fontSize: '0.8rem' }}>DXF Units</label>
+                    <select
+                      value={state.dxfUnits}
+                      onChange={(e) => setState(prev => ({ ...prev, dxfUnits: e.target.value as 'mm' | 'inch' | 'px' }))}
+                      className="custom-select"
+                      style={{ padding: '4px', fontSize: '0.8rem' }}
+                    >
+                      <option value="mm">Millimeters (mm)</option>
+                      <option value="inch">Inches (in)</option>
+                      <option value="px">Pixels (px)</option>
+                    </select>
+                  </div>
                 </div>
               </motion.div>
             )}

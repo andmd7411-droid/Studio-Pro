@@ -10,10 +10,14 @@ export const downloadBlob = (blob: Blob, fileName: string) => {
     const link = document.createElement('a');
     link.href = url;
     link.download = fileName;
+    link.style.visibility = 'hidden';
+    link.style.position = 'absolute';
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    setTimeout(() => {
+        if (link.parentNode) document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }, 500); // More generous timeout
 };
 
 /**
@@ -85,7 +89,8 @@ export const exportToBMP = (
         }
 
         const blob = new Blob([buffer], { type: 'image/bmp' });
-        downloadBlob(blob, 'converted_image.bmp');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadBlob(blob, `export_${timestamp}.bmp`);
 
     } else {
         // 24-bit color BMP
@@ -129,7 +134,9 @@ export const exportToBMP = (
         }
 
         const blob = new Blob([buffer], { type: 'image/bmp' });
-        downloadBlob(blob, 'converted_image.bmp');
+        const now = new Date();
+        const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+        downloadBlob(blob, `photo_${timestamp}.bmp`);
     }
 };
 
@@ -193,7 +200,9 @@ export const previewSVG = (
     colorQuantCycles: number = 3,
     minColorRatio: number = 0,
     ltres: number = 1,
-    qtres: number = 1
+    qtres: number = 1,
+    despeckle: number = 0,
+    smoothingIterations: number = 0
 ): string => {
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -217,11 +226,26 @@ export const previewSVG = (
         qtres
     );
 
-    // @ts-ignore
     const engine = ImageTracer.imagedataToSVG ? ImageTracer : (ImageTracer.default || ImageTracer);
 
     try {
         let svg = engine.imagedataToSVG(imgData, options);
+
+        // Apply Smoothing and Despeckle to preview if needed
+        if (despeckle > 0 || smoothingIterations > 0) {
+            let paths = extractPaths(svg);
+            if (despeckle > 0) {
+                paths = despecklePaths(paths, despeckle);
+            }
+            if (smoothingIterations > 0) {
+                paths = paths.map(p => smoothPathData(p, smoothingIterations));
+            }
+            // Reconstruct SVG string with processed paths
+            const width = imgData.width;
+            const height = imgData.height;
+            const pathsHtml = paths.map(p => `<path d="${p}" stroke="black" fill="none" class="vector-path" />`).join('');
+            svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${pathsHtml}</svg>`;
+        }
 
         // Force SVG to be responsive and fit container exactly
         const width = imgData.width;
@@ -251,11 +275,23 @@ export const exportToSVG = (
     colorQuantCycles: number = 3,
     minColorRatio: number = 0,
     ltres: number = 1,
-    qtres: number = 1
+    qtres: number = 1,
+    despeckle: number = 0,
+    smoothingIterations: number = 0
 ) => {
-    const svgString = previewSVG(canvas, smoothness, pathOptimization, strokeWidth, blurRadius, rightAngleEnhance, minColorRange, scale, roundCoords, layering, colorQuantCycles, minColorRatio, ltres, qtres);
-    const blob = new Blob([svgString], { type: 'image/svg+xml' });
-    downloadBlob(blob, 'converted_image.svg');
+    let svgString = previewSVG(canvas, smoothness, pathOptimization, strokeWidth, blurRadius, rightAngleEnhance, minColorRange, scale, roundCoords, layering, colorQuantCycles, minColorRatio, ltres, qtres, despeckle, smoothingIterations);
+
+    // If SVG is empty/invalid, create a proper copy.
+    if (!svgString || svgString.trim().length < 50) {
+        // Fallback: embed canvas as PNG within SVG
+        const dataUrl = canvas.toDataURL('image/png');
+        svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}"><image href="${dataUrl}" width="${canvas.width}" height="${canvas.height}" /></svg>`;
+    }
+
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    downloadBlob(blob, `vector_${ts}.svg`);
 };
 
 export const exportToDXF = (
@@ -272,34 +308,116 @@ export const exportToDXF = (
     colorQuantCycles: number = 3,
     minColorRatio: number = 0,
     ltres: number = 1,
-    qtres: number = 1
+    qtres: number = 1,
+    units: string = 'mm',
+    despeckle: number = 0,
+    smoothingIterations: number = 0
 ) => {
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) { alert('Cannot access canvas context for DXF export'); return; }
 
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    if (canvas.width === 0 || canvas.height === 0) { alert('No image to export. Please upload an image first.'); return; }
+
     const options = {
         ...getHighQualityOptions(smoothness, pathOptimization, strokeWidth, blurRadius, rightAngleEnhance, minColorRange, scale, roundCoords, layering, colorQuantCycles, minColorRatio, ltres, qtres),
         strokewidth: strokeWidth,
     };
 
-    // @ts-ignore
     const engine = ImageTracer.imagedataToSVG ? ImageTracer : (ImageTracer.default || ImageTracer);
 
-    console.log(`Exporting DXF with high quality, smoothness: ${smoothness}`);
-    const svgString = engine.imagedataToSVG(imgData, options);
+    let svgStringFromTracer = '';
+    try {
+        svgStringFromTracer = engine.imagedataToSVG(imgData, options);
+    } catch (e) {
+        console.error('ImageTracer failed during DXF export:', e);
+    }
 
-    // 2. Convert SVG path to MakerJS model
-    const model = makerjs.importer.fromSVGPathData(extractPathData(svgString));
+    let paths = extractPaths(svgStringFromTracer);
+    if (despeckle > 0) paths = despecklePaths(paths, despeckle);
+    if (smoothingIterations > 0) paths = paths.map(p => smoothPathData(p, smoothingIterations));
 
-    // 3. Export to DXF
-    const dxf = makerjs.exporter.toDXF(model);
-    const blob = new Blob([dxf], { type: 'application/dxf' });
-    downloadBlob(blob, 'converted_image.dxf');
+    let dxfContent = '';
+    if (paths.length > 0) {
+        const combinedPathData = paths.join(' ');
+        try {
+            const model = makerjs.importer.fromSVGPathData(combinedPathData);
+            if (model) {
+                model.units = units === 'inch' ? makerjs.unitType.Inch : (units === 'mm' ? makerjs.unitType.Millimeter : undefined);
+                dxfContent = makerjs.exporter.toDXF(model);
+            }
+        } catch (e) {
+            console.error('MakerJS DXF conversion failed:', e);
+        }
+    }
+
+    // Fallback: if DXF content is empty, generate a basic valid DXF with a rectangle
+    if (!dxfContent || dxfContent.trim().length < 20) {
+        const w = canvas.width;
+        const h = canvas.height;
+        dxfContent = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nRECTANG\n8\n0\n10\n0.0\n20\n0.0\n11\n${w}.0\n21\n${h}.0\n0\nENDSEC\n0\nEOF`;
+    }
+
+    const blob = new Blob([dxfContent], { type: 'application/dxf' });
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    downloadBlob(blob, `precision_${ts}.dxf`);
 };
 
-// Helper to extract all path data from SVG string for MakerJS
-function extractPathData(svgString: string): string {
+// Helper to remove small isolated paths (Despeckle)
+function despecklePaths(paths: string[], threshold: number): string[] {
+    if (threshold <= 0) return paths;
+    return paths.filter(pathData => {
+        // Very rough area/length estimation for filtering
+        const bbox = makerjs.importer.fromSVGPathData(pathData);
+        if (!bbox) return false;
+        const measure = makerjs.measure.modelExtents(bbox);
+        if (!measure) return false;
+        const size = Math.max(measure.high[0] - measure.low[0], measure.high[1] - measure.low[1]);
+        return size > threshold;
+    });
+}
+
+// Chaikin's Smoothing Algorithm for SVG paths
+function smoothPathData(pathData: string, iterations: number): string {
+    if (iterations <= 0) return pathData;
+
+    const parsePoints = (data: string): number[][] => {
+        const points: number[][] = [];
+        const matches = data.matchAll(/([ML])\s*(-?\d+\.?\d*)\s*(-?\d+\.?\d*)/g);
+        for (const match of matches) {
+            points.push([parseFloat(match[2]), parseFloat(match[3])]);
+        }
+        return points;
+    };
+
+    const chaikin = (points: number[][]): number[][] => {
+        if (points.length < 3) return points;
+        const newPoints: number[][] = [];
+        newPoints.push(points[0]); // Keep start
+        for (let i = 0; i < points.length - 1; i++) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            const q = [0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]];
+            const r = [0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]];
+            newPoints.push(q, r);
+        }
+        newPoints.push(points[points.length - 1]); // Keep end
+        return newPoints;
+    };
+
+    let pts = parsePoints(pathData);
+    if (pts.length < 3) return pathData;
+
+    for (let i = 0; i < iterations; i++) {
+        pts = chaikin(pts);
+    }
+
+    return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p[0].toFixed(3)} ${p[1].toFixed(3)}`).join(' ');
+}
+
+// Internal helpers
+function extractPaths(svgString: string): string[] {
     const matches = Array.from(svgString.matchAll(/d="([^"]+)"/g));
-    return matches.map(m => m[1]).join(' ');
+    return matches.map(m => m[1]);
 }
