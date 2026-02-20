@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
+import './index.css';
 import {
   Upload,
   Layers,
   Activity
 } from 'lucide-react';
+
 import { motion, AnimatePresence } from 'framer-motion';
 import { exportToBMP, exportToSVG, exportToDXF, previewSVG } from './utils/converters';
 
