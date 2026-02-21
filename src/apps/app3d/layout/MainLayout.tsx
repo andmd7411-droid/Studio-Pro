@@ -4,15 +4,17 @@ import { Box } from 'lucide-react';
 
 export const MainLayout = () => {
     return (
-        <div className="flex h-full bg-dark text-white overflow-hidden">
-            {/* 3D Viewer Area */}
-            <div className="flex-1 relative">
-                <Viewer3D />
-                <NoImageOverlay />
-            </div>
+        <div className="app3d-root">
+            <div className="flex h-full bg-dark text-white overflow-hidden">
+                {/* 3D Viewer Area */}
+                <div className="flex-1 relative">
+                    <Viewer3D />
+                    <NoImageOverlay />
+                </div>
 
-            {/* Sidebar Controls — scrollable */}
-            <Controls />
+                {/* Sidebar Controls — scrollable */}
+                <Controls />
+            </div>
         </div>
     );
 };

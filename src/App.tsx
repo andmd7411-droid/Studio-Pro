@@ -7,12 +7,7 @@ import { AppProvider as App3DProvider } from './apps/app3d/store/AppContext';
 import { MainLayout as MainLayout3D } from './apps/app3d/layout/MainLayout';
 
 // ─── App 4D ───
-import Layout4D from './apps/app4d/components/Layout/MainLayout';
-import AnimeScene from './apps/app4d/components/Viewer/AnimeScene';
-import ToolsLeft4D from './apps/app4d/components/Tools/LeftPanel';
-import ToolsRight4D from './apps/app4d/components/Tools/RightPanel';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
-import * as THREE from 'three';
+import App4D from './apps/app4d/App';
 
 // ─── App DFX ───
 import AppDFX from './apps/appdfx/App';
@@ -129,71 +124,6 @@ const AnimatedBackground: React.FC = () => (
     </div>
 );
 
-// ─── App4D Wrapper ───
-const App4DWrapper: React.FC = () => {
-    const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-    const [animation, setAnimation] = useState<string>('idle');
-    const [adjustments, setAdjustments] = useState({
-        scale: 1,
-        rotation: 0,
-        metalness: 0,
-        roughness: 1,
-        displacementScale: 0.05,
-        color: '#ffffff',
-        wireframe: false,
-        emissiveIntensity: 0.1,
-        opacity: 1,
-        alphaTest: 0.5,
-        shape: 'plane'
-    });
-    const exportRef = useRef<THREE.Group | null>(null);
-
-    const handleUpload = (file: File) => {
-        const url = URL.createObjectURL(file);
-        setUploadedImage(url);
-    };
-
-    const handleExport = () => {
-        if (!exportRef.current) return;
-        const exporter = new GLTFExporter();
-        exporter.parse(
-            exportRef.current,
-            (gltf) => {
-                const blob = new Blob([gltf as ArrayBuffer], { type: 'model/gltf-binary' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = 'model.glb';
-                link.click();
-            },
-            (_err: ErrorEvent) => console.error('GLB Export error'),
-            { binary: true }
-        );
-    };
-
-    const handleStyleSelect = (style: 'anime' | 'cyber') => {
-        if (style === 'anime') {
-            setAdjustments(p => ({
-                ...p,
-                metalness: 0, roughness: 1, displacementScale: 0.05,
-                color: '#ffffff', wireframe: false, emissiveIntensity: 0.1, opacity: 1
-            }));
-        } else {
-            setAdjustments(p => ({
-                ...p,
-                metalness: 0.9, roughness: 0.2, displacementScale: 0.4,
-                color: '#b3e0ff', wireframe: false, emissiveIntensity: 1.5, opacity: 0.9
-            }));
-        }
-    };
-
-    return (
-        <Layout4D
-            leftPanel={<ToolsLeft4D onUpload={handleUpload} adjustments={adjustments} onAdjustmentChange={setAdjustments} />}
-            centerPanel={<AnimeScene textureUrl={uploadedImage} currentAnimation={animation} adjustments={adjustments} exportRef={exportRef} />}
-            rightPanel={<ToolsRight4D onAnimate={setAnimation} onExport={handleExport} onStyleSelect={handleStyleSelect} />}
-        />
-    );
-};
 
 // ─── Main App Component ───
 const App: React.FC = () => {
@@ -258,8 +188,8 @@ const App: React.FC = () => {
                             className="flex-1 flex flex-col items-center justify-center p-6 mt-10"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
-                            exit={{ opacity: 0, scale: 0.95, filter: 'blur(10px)' }}
-                            transition={{ duration: 0.5 }}
+                            exit={{ opacity: 0, filter: 'blur(5px)' }}
+                            transition={{ duration: 0.3 }}
                         >
                             {/* Hero Section */}
                             <div className="text-center mb-16 relative">
@@ -366,10 +296,10 @@ const App: React.FC = () => {
                         // ─── Active Application Module ───
                         <motion.div
                             key="active-app"
-                            initial={{ opacity: 0, scale: 0.98 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 1.02 }}
-                            transition={{ duration: 0.4 }}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.3 }}
                             className="w-full h-full"
                         >
                             {/* Header for Active Module (optional context) */}
@@ -382,7 +312,7 @@ const App: React.FC = () => {
                             )}
 
                             {activeTab === '3d' && <App3DProvider><MainLayout3D /></App3DProvider>}
-                            {activeTab === '4d' && <App4DWrapper />}
+                            {activeTab === '4d' && <App4D />}
                             {activeTab === 'dfx' && <AppDFX />}
                             {activeTab === 'multi' && <AppMulti />}
                         </motion.div>
