@@ -2,8 +2,8 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Environment, ContactShadows, Float, MeshReflectorMaterial, Stage } from '@react-three/drei';
 import * as THREE from 'three';
-import { STLExporter } from 'three/examples/jsm/exporters/STLExporter';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { Upload, Settings, Download, Zap, Layers, Maximize, Sliders, Box, Circle, Database, Package, Sun, Moon, Cloud, Star } from 'lucide-react';
 import './index.css';
 import './App.css';
@@ -335,7 +335,7 @@ export default function App() {
     const exporter = new GLTFExporter();
     exporter.parse(
       meshRef.current,
-      (result) => {
+      (result: any) => {
         const output = result instanceof ArrayBuffer ? result : JSON.stringify(result);
         const blob = new Blob([output], { type: 'application/octet-stream' });
         const link = document.createElement('a');
@@ -343,7 +343,7 @@ export default function App() {
         link.download = `model_4d_${Date.now()}.glb`;
         link.click();
       },
-      (error) => console.error(error),
+      (error: any) => console.error(error),
       { binary: true }
     );
   };
@@ -463,7 +463,7 @@ export default function App() {
 
       {/* --- Main Viewport --- */}
       <main>
-        <Viewport image={image} settings={settings} meshRef={meshRef} />
+        <Viewport image={image} settings={settings} meshRef={meshRef as React.RefObject<THREE.Mesh>} />
       </main>
 
       {/* --- Right Sidebar --- */}
